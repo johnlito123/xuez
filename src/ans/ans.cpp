@@ -1,5 +1,5 @@
 /*
- * This file is part of the ECC project
+ * This file was part of the ECC project and used for Xuez Project - Thank you Greg Griffith
  * Copyright (c) 2018 Greg Griffith
  *
  * This program is free software: you can redistribute it and/or modify
