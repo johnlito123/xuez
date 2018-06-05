@@ -6,6 +6,8 @@
 # Exercise the listreceivedbyaddress API
 
 from test_framework import BitcoinTestFramework
+from test_framework.util import *
+from test_framework.test_framework import BitcoinTestFramework
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from util import *
 
@@ -25,6 +27,12 @@ def get_sub_array_from_array(object_array, to_match):
             continue
         return item
     return []
+
+class ReceivedByTest(BitcoinTestFramework):
+
+    def setup_nodes(self):
+        enable_mocktime()
+        return start_nodes(4, self.options.tmpdir)
 
 def check_array_result(object_array, to_match, expected, should_not_find = False):
     """

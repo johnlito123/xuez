@@ -8,6 +8,7 @@
 #
 
 from test_framework import BitcoinTestFramework
+from test_framework.util import *
 from util import *
 import base64
 

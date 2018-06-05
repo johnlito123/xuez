@@ -5,10 +5,20 @@
 
 # Exercise the listtransactions API
 
+import pdb
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import *
 from test_framework import BitcoinTestFramework
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from util import *
+from test_framework.mininode import CTransaction, COIN
+from io import BytesIO
 
+def txFromHex(hexstring):
+    tx = CTransaction()
+    f = BytesIO(hex_str_to_bytes(hexstring))
+    tx.deserialize(f)
+    return tx
 
 def check_array_result(object_array, to_match, expected):
     """
@@ -32,6 +42,10 @@ def check_array_result(object_array, to_match, expected):
         raise AssertionError("No objects matched %s"%(str(to_match)))
 
 class ListTransactionsTest(BitcoinTestFramework):
+
+    def setup_nodes(self):
+        enable_mocktime()
+        return start_nodes(4, self.options.tmpdir)
 
     def run_test(self):
         # Simple send, 0 to 1:
@@ -93,6 +107,15 @@ class ListTransactionsTest(BitcoinTestFramework):
         check_array_result(self.nodes[1].listtransactions(),
                            {"category":"receive","amount":Decimal("0.44")},
                            {"txid":txid, "account" : "toself"} )
+        multisig = self.nodes[1].createmultisig(1, [self.nodes[1].getnewaddress()])
+        self.nodes[0].importaddress(multisig["redeemScript"], "watchonly", False, True)
+        txid = self.nodes[1].sendtoaddress(multisig["address"], 0.1)
+        self.nodes[1].generate(1)
+        self.sync_all()
+        assert(len(self.nodes[0].listtransactions("watchonly", 100, 0, False)) == 0)
+        assert_array_result(self.nodes[0].listtransactions("watchonly", 100, 0, True),
+                           {"category":"receive","amount":Decimal("0.1")},
+                           {"txid":txid, "account" : "watchonly"} )
 
 if __name__ == '__main__':
     ListTransactionsTest().main()

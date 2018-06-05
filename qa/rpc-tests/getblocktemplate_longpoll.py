@@ -4,9 +4,11 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 from test_framework import BitcoinTestFramework
+from test_framework.util import *
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from util import *
 
+import threading
 
 def check_array_result(object_array, to_match, expected):
     """
@@ -52,6 +54,7 @@ class GetBlockTemplateLPTest(BitcoinTestFramework):
     def run_test(self):
         print "Warning: this test will take about 70 seconds in the best case. Be patient."
         self.nodes[0].setgenerate(True, 10)
+        self.sync_all()
         templat = self.nodes[0].getblocktemplate()
         longpollid = templat['longpollid']
         # longpollid should not change between successive invocations if nothing else happens

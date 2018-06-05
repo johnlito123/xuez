@@ -6,10 +6,22 @@
 #
 # Test InvalidateBlock code
 #
-
+import time
 from test_framework import BitcoinTestFramework
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
+from test_framework.util import
 from util import *
+
+def retryWhile(fn, exc, excStr=None):
+    while 1:
+        try:
+            fn()
+            break
+        except exc as e:
+            if (not excStr is None):
+                if not excStr in str(e):
+                    raise
+        time.sleep(.5)
 
 class InvalidateTest(BitcoinTestFramework):
     
@@ -71,6 +83,61 @@ class InvalidateTest(BitcoinTestFramework):
         node1height = self.nodes[1].getblockcount()
         if node1height < 4:
             raise AssertionError("Node 1 reorged to a lower height: %d"%node1height)
+            
+         self.testChainSyncWithLongerInvalid()
+
+def testChainSyncWithLongerInvalid(self):
+        print("verify that IBD continues on a separate chain after a block is invalidated")
+
+        ret = self.nodes[0].generate(50)
+        # after the headers propagate, invalidate the block
+        retryWhile(lambda: self.nodes[1].invalidateblock(ret[0]), JSONRPCException, "Block not found")
+        # now generate a competing chain
+        ret1 = self.nodes[1].generate(25)
+
+        # now start up a new node to sync with one of the chains
+        self.nodes.append(start_node(3, self.options.tmpdir, ["-debug"]))
+        connect_nodes_bi(self.nodes,0,3)
+        connect_nodes_bi(self.nodes,1,3)
+        # invalidate the longest chain
+        self.nodes[3].invalidateblock(ret[0])
+        # give it time to sync with the shorter chain on node 1
+        print("allowing node 3 to sync")
+        time.sleep(5)
+        blocks1 = self.nodes[1].getblockcount()
+        nblocks = self.nodes[3].getblockcount()
+        # test if it is synced
+        if nblocks != blocks1:
+            print("ERROR: node 3 did not sync with longest valid chain")
+            print("chain tips on 0: %s" % str(self.nodes[0].getchaintips()))
+            print("chain tips on 1: %s" % str(self.nodes[1].getchaintips()))
+            print("chain tips on 3: %s" % str(self.nodes[3].getchaintips()))
+            print("longest chain on 3: %s" % str(self.nodes[3].getblockcount()))
+        # enable when fixed: assert(nblocks == blocks1);  # since I invalidated a block on 0's chain, I should be caught up with 1
+
+        print("Now make the other chain (with no invalid blocks) longer")
+        ret1 = self.nodes[1].generate(50)
+        time.sleep(5)
+        blocks1 = self.nodes[1].getblockcount()
+        nblocks = self.nodes[3].getblockcount()
+        # test if it is synced
+        if nblocks != blocks1:
+            print("node 3 did not sync up")
+            print("chain tips on 0: %s" % str(self.nodes[0].getchaintips()))
+            print("chain tips on 1: %s" % str(self.nodes[1].getchaintips()))
+            print("chain tips on 3: %s" % str(self.nodes[3].getchaintips()))
+            print("longest chain on 3: %s" % str(self.nodes[3].getblockcount()))
+        else:
+            print("node 1 synced with longest chain")
+
 
 if __name__ == '__main__':
     InvalidateTest().main()
+
+def Test():
+    t = InvalidateTest()
+    bitcoinConf = {
+    "debug":["net","blk","thin","mempool","req","bench","evict"], # "lck"
+    "blockprioritysize":2000000  # we don't want any transactions rejected due to insufficient fees...
+     }
+    t.main(["--nocleanup","--noshutdown", "--tmpdir=/ramdisk/test"],bitcoinConf,None)

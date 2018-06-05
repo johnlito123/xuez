@@ -4,6 +4,7 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 from test_framework import BitcoinTestFramework
+from test_framework.util import *
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from util import *
 
@@ -68,6 +69,17 @@ def genmrklroot(leaflist):
             n.append(dblsha(cur[i] + cur[i+1]))
         cur = n
     return cur[0]
+
+def template_to_bytearray(tmpl, txlist):
+    blkver = pack('<L', tmpl['version'])
+    mrklroot = genmrklroot(list(dblsha(a) for a in txlist))
+    timestamp = pack('<L', tmpl['curtime'])
+    nonce = b'\0\0\0\0'
+    blk = blkver + a2b_hex(tmpl['previousblockhash'])[::-1] + mrklroot + timestamp + a2b_hex(tmpl['bits'])[::-1] + nonce
+    blk += varlenEncode(len(txlist))
+    for tx in txlist:
+        blk += tx
+    return bytearray(blk)
 
 def template_to_bytes(tmpl, txlist):
     blkver = pack('<L', tmpl['version'])

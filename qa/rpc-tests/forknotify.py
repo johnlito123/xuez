@@ -8,6 +8,7 @@
 #
 
 from test_framework import BitcoinTestFramework
+from test_framework.util import *
 from bitcoinrpc.authproxy import AuthServiceProxy, JSONRPCException
 from util import *
 import os

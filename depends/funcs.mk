@@ -20,8 +20,10 @@ $(sort $(foreach dep,$(2),$(2) $(call int_get_all_dependencies,$(1),$($(dep)_dep
 endef
 
 define fetch_file_inner
+(test -f $$($(1)_source_dir)/$(4) || \
     ( mkdir -p $$($(1)_download_dir) && echo Fetching $(3) from $(2) && \
     $(build_DOWNLOAD) "$$($(1)_download_dir)/$(4).temp" "$(2)/$(3)" && \
+	$(build_DOWNLOAD) "$$($(1)_download_dir)/$(4).temp" "$(FALLBACK_DOWNLOAD_PATH)/$(3)" ) && \
     echo "$(5)  $$($(1)_download_dir)/$(4).temp" > $$($(1)_download_dir)/.$(4).hash && \
     $(build_SHA256SUM) -c $$($(1)_download_dir)/.$(4).hash && \
     mv $$($(1)_download_dir)/$(4).temp $$($(1)_source_dir)/$(4) && \
