@@ -96,6 +96,7 @@ Options SanitizeOptions(const std::string& dbname,
   result.filter_policy = (src.filter_policy != NULL) ? ipolicy : NULL;
   ClipToRange(&result.max_open_files,    64 + kNumNonTableCacheFiles, 50000);
   ClipToRange(&result.write_buffer_size, 64<<10,                      1<<30);
+  ClipToRange(&result.max_file_size,     1<<20,                       1<<30);
   ClipToRange(&result.block_size,        1<<10,                       4<<20);
   if (result.info_log == NULL) {
     // Open a log file in the same directory as the db
@@ -341,8 +342,11 @@ Status DBImpl::Recover(VersionEdit* edit) {
     // Recover in the order in which the logs were generated
     std::sort(logs.begin(), logs.end());
     for (size_t i = 0; i < logs.size(); i++) {
-      s = RecoverLogFile(logs[i], edit, &max_sequence);
-
+      s = RecoverLogFile(logs[i], (i == logs.size() - 1), save_manifest, edit,
+                       &max_sequence);
+    if (!s.ok()) {
+      return s;
+    }
       // The previous incarnation may not have written any MANIFEST
       // records after allocating this log number.  So we manually
       // update the file number allocation counter in VersionSet.
@@ -451,6 +455,37 @@ Status DBImpl::RecoverLogFile(uint64_t log_number,
 
   if (mem != NULL) mem->Unref();
   delete file;
+    // See if we should keep reusing the last log file.
+  if (status.ok() && options_.reuse_logs && last_log && compactions == 0) {
+    assert(logfile_ == NULL);
+    assert(log_ == NULL);
+    assert(mem_ == NULL);
+    uint64_t lfile_size;
+    if (env_->GetFileSize(fname, &lfile_size).ok() &&
+        env_->NewAppendableFile(fname, &logfile_).ok()) {
+      Log(options_.info_log, "Reusing old log %s \n", fname.c_str());
+      log_ = new log::Writer(logfile_, lfile_size);
+      logfile_number_ = log_number;
+      if (mem != NULL) {
+        mem_ = mem;
+        mem = NULL;
+      } else {
+        // mem can be NULL if lognum exists but was empty.
+        mem_ = new MemTable(internal_comparator_);
+        mem_->Ref();
+      }
+    }
+  }
+
+  if (mem != NULL) {
+    // mem did not get reused; compact it.
+    if (status.ok()) {
+      *save_manifest = true;
+      status = WriteLevel0Table(mem, edit, NULL);
+    }
+    mem->Unref();
+  }
+
   return status;
 }
 
@@ -1395,6 +1430,19 @@ bool DBImpl::GetProperty(const Slice& property, std::string* value) {
   } else if (in == "sstables") {
     *value = versions_->current()->DebugString();
     return true;
+  } else if (in == "approximate-memory-usage") {
+    size_t total_usage = options_.block_cache->TotalCharge();
+    if (mem_) {
+      total_usage += mem_->ApproximateMemoryUsage();
+    }
+    if (imm_) {
+      total_usage += imm_->ApproximateMemoryUsage();
+    }
+    char buf[50];
+    snprintf(buf, sizeof(buf), "%llu",
+             static_cast<unsigned long long>(total_usage));
+    value->append(buf);
+    return true;
   }
 
   return false;
@@ -1460,8 +1508,16 @@ Status DB::Open(const Options& options, const std::string& dbname,
       impl->logfile_ = lfile;
       impl->logfile_number_ = new_log_number;
       impl->log_ = new log::Writer(lfile);
+      impl->mem_ = new MemTable(impl->internal_comparator_);
+      impl->mem_->Ref();
       s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
     }
+  }
+  if (s.ok() && save_manifest) {
+    edit.SetPrevLogNumber(0);  // No older logs needed after recovery.
+    edit.SetLogNumber(impl->logfile_number_);
+    s = impl->versions_->LogAndApply(&edit, &impl->mutex_);
+  }
     if (s.ok()) {
       impl->DeleteObsoleteFiles();
       impl->MaybeScheduleCompaction();

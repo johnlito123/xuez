@@ -34,6 +34,7 @@
 //      readhot       -- read N times in random order from 1% section of DB
 //      seekrandom    -- N random seeks
 //      crc32c        -- repeated crc32c of 4K of data
+//      open          -- cost of opening a DB
 //      acquireload   -- load N*1000 times
 //   Meta operations:
 //      compact     -- Compact the entire DB
@@ -87,8 +88,9 @@ static int FLAGS_write_buffer_size = 0;
 // Negative means use default settings.
 static int FLAGS_cache_size = -1;
 
-// Maximum number of files to keep open at the same time (use default if == 0)
-static int FLAGS_open_files = 0;
+// Approximate size of user data packed per block (before compression.
+// (initialized to default value by "main")
+static int FLAGS_block_size = 0;
 
 // Bloom filter bits per key.
 // Negative means use default settings.
@@ -105,6 +107,17 @@ static const char* FLAGS_db = NULL;
 namespace leveldb {
 
 namespace {
+
+
+
+
+
+
+
+
+
+
+
 
 // Helper for quickly generating random data.
 class RandomGenerator {
@@ -138,6 +151,7 @@ class RandomGenerator {
   }
 };
 
+#if defined(__linux)
 static Slice TrimSpace(Slice s) {
   size_t start = 0;
   while (start < s.size() && isspace(s[start])) {
@@ -149,6 +163,7 @@ static Slice TrimSpace(Slice s) {
   }
   return Slice(s.data() + start, limit - start);
 }
+#endif
 
 static void AppendWithSpace(std::string* str, Slice msg) {
   if (msg.empty()) return;
@@ -442,8 +457,13 @@ class Benchmark {
       bool fresh_db = false;
       int num_threads = FLAGS_threads;
 
-      if (name == Slice("fillseq")) {
+      if (name == Slice("open")) {
+        method = &Benchmark::OpenBench;
+        num_ /= 10000;
+        if (num_ < 1) num_ = 1;
+      } else if (name == Slice("fillseq")) {
         fresh_db = true;
+        entries_per_batch_ = 1000;
         method = &Benchmark::WriteSeq;
       } else if (name == Slice("fillbatch")) {
         fresh_db = true;
@@ -690,15 +710,27 @@ class Benchmark {
   void Open() {
     assert(db_ == NULL);
     Options options;
+    options.env = g_env;
     options.create_if_missing = !FLAGS_use_existing_db;
     options.block_cache = cache_;
     options.write_buffer_size = FLAGS_write_buffer_size;
+    options.max_file_size = FLAGS_max_file_size;
+    options.block_size = FLAGS_block_size;
     options.max_open_files = FLAGS_open_files;
     options.filter_policy = filter_policy_;
+    options.reuse_logs = FLAGS_reuse_logs;
     Status s = DB::Open(options, FLAGS_db, &db_);
     if (!s.ok()) {
       fprintf(stderr, "open error: %s\n", s.ToString().c_str());
       exit(1);
+    }
+  }
+
+  void OpenBench(ThreadState* thread) {
+    for (int i = 0; i < num_; i++) {
+      delete db_;
+      Open();
+      thread->stats.FinishedSingleOp();
     }
   }
 
@@ -924,6 +956,8 @@ class Benchmark {
 
 int main(int argc, char** argv) {
   FLAGS_write_buffer_size = leveldb::Options().write_buffer_size;
+  FLAGS_max_file_size = leveldb::Options().max_file_size;
+  FLAGS_block_size = leveldb::Options().block_size;
   FLAGS_open_files = leveldb::Options().max_open_files;
   std::string default_db_path;
 
@@ -941,6 +975,9 @@ int main(int argc, char** argv) {
     } else if (sscanf(argv[i], "--use_existing_db=%d%c", &n, &junk) == 1 &&
                (n == 0 || n == 1)) {
       FLAGS_use_existing_db = n;
+      } else if (sscanf(argv[i], "--reuse_logs=%d%c", &n, &junk) == 1 &&
+               (n == 0 || n == 1)) {
+      FLAGS_reuse_logs = n;
     } else if (sscanf(argv[i], "--num=%d%c", &n, &junk) == 1) {
       FLAGS_num = n;
     } else if (sscanf(argv[i], "--reads=%d%c", &n, &junk) == 1) {
@@ -951,6 +988,10 @@ int main(int argc, char** argv) {
       FLAGS_value_size = n;
     } else if (sscanf(argv[i], "--write_buffer_size=%d%c", &n, &junk) == 1) {
       FLAGS_write_buffer_size = n;
+    } else if (sscanf(argv[i], "--max_file_size=%d%c", &n, &junk) == 1) {
+      FLAGS_max_file_size = n;
+    } else if (sscanf(argv[i], "--block_size=%d%c", &n, &junk) == 1) {
+      FLAGS_block_size = n;
     } else if (sscanf(argv[i], "--cache_size=%d%c", &n, &junk) == 1) {
       FLAGS_cache_size = n;
     } else if (sscanf(argv[i], "--bloom_bits=%d%c", &n, &junk) == 1) {
@@ -964,6 +1005,8 @@ int main(int argc, char** argv) {
       exit(1);
     }
   }
+
+    leveldb::g_env = leveldb::Env::Default();
 
   // Choose a location for the test database if none given with --db=<path>
   if (FLAGS_db == NULL) {
