@@ -11,6 +11,7 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import *
 import zmq
 import binascii
+import struct
 
 try:
     import http.client as httplib
@@ -84,7 +85,14 @@ class ZMQTest (BitcoinTestFramework):
             hashZMQ = bytes_to_hex_str(body)
 
         assert_equal(hashRPC, hashZMQ) #blockhash from generate must be equal to the hash received over zmq
-
+    finally:
+            self.zmqSubSocket.close()
+            self.zmqSubSocket = None
+            self.zmqContext.destroy()
+            self.zmqContext = None
 
 if __name__ == '__main__':
+    ZMQTest ().main ()
+
+def Test():
     ZMQTest ().main ()

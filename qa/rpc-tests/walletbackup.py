@@ -33,6 +33,10 @@ Shutdown again, restore using importwallet,
 and confirm again balances are correct.
 """
 
+import pdb
+
+from test_framework.test_framework import BitcoinTestFramework
+from test_framework.util import *
 from test_framework import BitcoinTestFramework
 from util import *
 from random import randint
