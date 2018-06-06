@@ -6,10 +6,16 @@
 #define BITCOIN_CRYPTO_COMMON_H
 
 #include <stdint.h>
+#include "compat/crypto_endian.h"
 
 #if defined(HAVE_ENDIAN_H)
 #include <endian.h>
 #endif
+
+uint16_t static inline ReadLE16(const unsigned char* ptr)
+{
+    return le16toh(*((uint16_t*)ptr));
+}
 
 uint32_t static inline ReadLE32(const unsigned char* ptr)
 {
@@ -32,6 +38,11 @@ uint64_t static inline ReadLE64(const unsigned char* ptr)
     return ((uint64_t)ptr[7] << 56 | (uint64_t)ptr[6] << 48 | (uint64_t)ptr[5] << 40 | (uint64_t)ptr[4] << 32 |
             (uint64_t)ptr[3] << 24 | (uint64_t)ptr[2] << 16 | (uint64_t)ptr[1] << 8 | (uint64_t)ptr[0]);
 #endif
+}
+
+void static inline WriteLE16(unsigned char* ptr, uint16_t x)
+{
+    *((uint16_t*)ptr) = htole16(x);
 }
 
 void static inline WriteLE32(unsigned char* ptr, uint32_t x)

@@ -36,6 +36,139 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "scrypt.h"
+#include "pbkdf2.h"
+
+#include "net.h"
+#define SCRYPT_BUFFER_SIZE (131072 + 63)
+
+#if defined (OPTIMIZED_SALSA) && ( defined (__x86_64__) || defined (__i386__) || defined(__arm__) )
+extern "C" void scrypt_core(unsigned int *X, unsigned int *V);
+#else
+// Generic scrypt_core implementation
+
+static inline void xor_salsa8(unsigned int B[16], const unsigned int Bx[16])
+{
+    unsigned int x00,x01,x02,x03,x04,x05,x06,x07,x08,x09,x10,x11,x12,x13,x14,x15;
+    int i;
+
+    x00 = (B[0] ^= Bx[0]);
+    x01 = (B[1] ^= Bx[1]);
+    x02 = (B[2] ^= Bx[2]);
+    x03 = (B[3] ^= Bx[3]);
+    x04 = (B[4] ^= Bx[4]);
+    x05 = (B[5] ^= Bx[5]);
+    x06 = (B[6] ^= Bx[6]);
+    x07 = (B[7] ^= Bx[7]);
+    x08 = (B[8] ^= Bx[8]);
+    x09 = (B[9] ^= Bx[9]);
+    x10 = (B[10] ^= Bx[10]);
+    x11 = (B[11] ^= Bx[11]);
+    x12 = (B[12] ^= Bx[12]);
+    x13 = (B[13] ^= Bx[13]);
+    x14 = (B[14] ^= Bx[14]);
+    x15 = (B[15] ^= Bx[15]);
+    for (i = 0; i < 8; i += 2) {
+#define R(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
+        /* Operate on columns. */
+        x04 ^= R(x00+x12, 7); x09 ^= R(x05+x01, 7);
+        x14 ^= R(x10+x06, 7); x03 ^= R(x15+x11, 7);
+
+        x08 ^= R(x04+x00, 9); x13 ^= R(x09+x05, 9);
+        x02 ^= R(x14+x10, 9); x07 ^= R(x03+x15, 9);
+
+        x12 ^= R(x08+x04,13); x01 ^= R(x13+x09,13);
+        x06 ^= R(x02+x14,13); x11 ^= R(x07+x03,13);
+
+        x00 ^= R(x12+x08,18); x05 ^= R(x01+x13,18);
+        x10 ^= R(x06+x02,18); x15 ^= R(x11+x07,18);
+
+        /* Operate on rows. */
+        x01 ^= R(x00+x03, 7); x06 ^= R(x05+x04, 7);
+        x11 ^= R(x10+x09, 7); x12 ^= R(x15+x14, 7);
+
+        x02 ^= R(x01+x00, 9); x07 ^= R(x06+x05, 9);
+        x08 ^= R(x11+x10, 9); x13 ^= R(x12+x15, 9);
+
+        x03 ^= R(x02+x01,13); x04 ^= R(x07+x06,13);
+        x09 ^= R(x08+x11,13); x14 ^= R(x13+x12,13);
+
+        x00 ^= R(x03+x02,18); x05 ^= R(x04+x07,18);
+        x10 ^= R(x09+x08,18); x15 ^= R(x14+x13,18);
+#undef R
+    }
+    B[0] += x00;
+    B[1] += x01;
+    B[2] += x02;
+    B[3] += x03;
+    B[4] += x04;
+    B[5] += x05;
+    B[6] += x06;
+    B[7] += x07;
+    B[8] += x08;
+    B[9] += x09;
+    B[10] += x10;
+    B[11] += x11;
+    B[12] += x12;
+    B[13] += x13;
+    B[14] += x14;
+    B[15] += x15;
+}
+static inline void scrypt_core(unsigned int *X, unsigned int *V)
+{
+    unsigned int i, j, k;
+
+    for (i = 0; i < 1024; i++) {
+        memcpy(&V[i * 32], X, 128);
+        xor_salsa8(&X[0], &X[16]);
+        xor_salsa8(&X[16], &X[0]);
+    }
+    for (i = 0; i < 1024; i++) {
+        j = 32 * (X[16] & 1023);
+        for (k = 0; k < 32; k++)
+            X[k] ^= V[j + k];
+        xor_salsa8(&X[0], &X[16]);
+        xor_salsa8(&X[16], &X[0]);
+    }
+}
+
+#endif
+
+/* cpu and memory intensive function to transform a 80 byte buffer into a 32 byte output
+   scratchpad size needs to be at least 63 + (128 * r * p) + (256 * r + 64) + (128 * r * N) bytes
+   r = 1, p = 1, N = 1024
+ */
+
+uint256 scrypt_nosalt(const void* input, size_t inputlen, void *scratchpad)
+{
+    unsigned int *V;
+    unsigned int X[32];
+    uint256 result;
+    result.SetNull();
+    V = (unsigned int *)(((uintptr_t)(scratchpad) + 63) & ~ (uintptr_t)(63));
+
+    PBKDF2_SHA256((const uint8_t*)input, inputlen, (const uint8_t*)input, inputlen, 1, (uint8_t *)X, 128);
+    scrypt_core(X, V);
+    PBKDF2_SHA256((const uint8_t*)input, inputlen, (uint8_t *)X, 128, 1, (uint8_t*)&result, 32);
+
+    return result;
+}
+
+uint256 scrypt(const void* data, size_t datalen, const void* salt, size_t saltlen, void *scratchpad)
+{
+    unsigned int *V;
+    unsigned int X[32];
+    uint256 result;
+    result.SetNull();
+    V = (unsigned int *)(((uintptr_t)(scratchpad) + 63) & ~ (uintptr_t)(63));
+
+    PBKDF2_SHA256((const uint8_t*)data, datalen, (const uint8_t*)salt, saltlen, 1, (uint8_t *)X, 128);
+    scrypt_core(X, V);
+    PBKDF2_SHA256((const uint8_t*)data, datalen, (uint8_t *)X, 128, 1, (uint8_t*)&result, 32);
+
+    return result;
+}
+
 #ifndef __FreeBSD__
 static inline void be32enc(void *pp, uint32_t x)
 {
@@ -358,27 +491,155 @@ void SMix(uint8_t *B, unsigned int r, unsigned int N, void* _V, void* XY)
     for (k = 0; k < 32 * r; k++)
         le32enc_2(&B[4 * k], X[k]);
 }
+/* cpu and memory intensive function to transform a 80 byte buffer into a 32 byte output
+   scratchpad size needs to be at least 63 + (128 * r * p) + (256 * r + 64) + (128 * r * N) bytes
+   r = 1, p = 1, N = 1024
+ */
 
-void scrypt(const char* pass, unsigned int pLen, const char* salt, unsigned int sLen, char *output, unsigned int N, unsigned int r, unsigned int p, unsigned int dkLen)
+void scrypt(const void* input, size_t inputlen, const char* pass, uint32_t *res, void *scratchpad, unsigned int pLen, const char* salt, unsigned int sLen, char *output, unsigned int N, unsigned int r, unsigned int p, unsigned int dkLen)
 {
     //containers
     void* V0 = malloc(128 * r * N + 63);
     void* XY0 = malloc(256 * r + 64 + 63);
     void* B1 = malloc(128 * r * p + 63);
     uint8_t* B = (uint8_t *)(((uintptr_t)(B1) + 63) & ~ (uintptr_t)(63));
-    uint32_t* V = (uint32_t *)(((uintptr_t)(V0) + 63) & ~ (uintptr_t)(63));
+    uint32_t* V = (uint32_t *)(((uintptr_t)(scratchpad) + 63) & ~ (uintptr_t)(63));
     uint32_t* XY = (uint32_t *)(((uintptr_t)(XY0) + 63) & ~ (uintptr_t)(63));
+    uint32_t X[32];
 
-    PBKDF2_SHA256((const uint8_t *)pass, pLen, (const uint8_t *)salt, sLen, 1, B, p * 128 * r);
+    PBKDF2_SHA256((const uint8_t *)pass, pLen, input, inputlen, (const uint8_t *)salt, input, sLen, sizeof(CBlockHeader), 1, (uint8_t *)X, B, p * 128 * r);
+
+    scrypt_core(X, V);
 
     for(unsigned int i = 0; i < p; i++)
     {
         SMix(&B[i * 128 * r], r, N, V, XY);
     }
 
-    PBKDF2_SHA256((const uint8_t *)pass, pLen, B, p * 128 * r, 1, (uint8_t *)output, dkLen);
+    PBKDF2_SHA256((const uint8_t *)pass, pLen, input, inputlen, (uint8_t *)X, B, p * 128 * r, 1, (uint8_t *)res, output, dkLen, 32);
 
     free(V0);
     free(XY0);
     free(B1);
+}
+uint256 scrypt_hash(const void* input, size_t inputlen)
+{
+    unsigned char scratchpad[SCRYPT_BUFFER_SIZE];
+    return scrypt_nosalt(input, inputlen, scratchpad);
+}
+
+uint256 scrypt_salted_hash(const void* input, size_t inputlen, const void* salt, size_t saltlen)
+{
+    unsigned char scratchpad[SCRYPT_BUFFER_SIZE];
+    return scrypt(input, inputlen, salt, saltlen, scratchpad);
+}
+
+uint256 scrypt_salted_multiround_hash(const void* input, size_t inputlen, const void* salt, size_t saltlen, const unsigned int nRounds)
+{
+    uint256 resultHash = scrypt_salted_hash(input, inputlen, salt, saltlen);
+    uint256 transitionalHash = resultHash;
+
+    for(unsigned int i = 1; i < nRounds; i++)
+    {
+        resultHash = scrypt_salted_hash(input, inputlen, (const void*)&transitionalHash, 32);
+        transitionalHash = resultHash;
+    }
+
+    return resultHash;
+}
+
+uint256 scrypt_blockhash(const void* input)
+{
+    unsigned char scratchpad[SCRYPT_BUFFER_SIZE];
+    return scrypt_nosalt(input, 80, scratchpad);
+}
+
+unsigned int scanhash_scrypt(CBlockHeader *pdata, void *scratchbuf,
+    uint32_t max_nonce, uint32_t &hash_count,
+    void *result, CBlockHeader *res_header)
+{
+    hash_count = 0;
+    CBlockHeader data = *pdata;
+    uint32_t hash[8];
+    unsigned char *hashc = (unsigned char *) &hash;
+
+#ifdef SCRYPT_3WAY
+    block_header data2 = *pdata;
+    uint32_t hash2[8];
+    unsigned char *hashc2 = (unsigned char *) &hash2;
+
+    block_header data3 = *pdata;
+    uint32_t hash3[8];
+    unsigned char *hashc3 = (unsigned char *) &hash3;
+
+    int throughput = scrypt_best_throughput();
+#endif
+
+    uint32_t n = 0;
+
+    while (true) {
+
+        data.nNonce = n++;
+
+#ifdef SCRYPT_3WAY
+        if (throughput >= 2 && n < max_nonce) {
+            data2.nonce = n++;
+            if(throughput >= 3)
+            {
+                data3.nonce = n++;
+                scrypt_3way(&data, &data2, &data3, 80, 80, 80, hash, hash2, hash3, scratchbuf);
+                hash_count += 3;
+
+                if (hashc3[31] == 0 && hashc3[30] == 0) {
+                    memcpy(result, hash3, 32);
+                    *res_header = data3;
+
+                    return data3.nonce;
+                }
+            }
+            else
+            {
+                scrypt_2way(&data, &data2, 80, 80, hash, hash2, scratchbuf);
+                hash_count += 2;
+            }
+
+            if (hashc2[31] == 0 && hashc2[30] == 0) {
+                memcpy(result, hash2, 32);
+
+                return data2.nonce;
+            }
+        } else {
+            scrypt(&data, 80, hash, scratchbuf);
+            hash_count += 1;
+        }
+#else
+        scrypt(&data, 80, hash, scratchbuf);
+        hash_count += 1;
+#endif
+        if (hashc[31] == 0 && hashc[30] == 0) {
+            memcpy(result, hash, 32);
+
+            return data.nNonce;
+        }
+
+        if (n >= max_nonce) {
+            hash_count = 0xffff + 1;
+            break;
+        }
+    }
+
+    return (unsigned int) -1;
+}
+void *scrypt_buffer_alloc() {
+    return malloc(SCRYPT_BUFFER_SIZE);
+}
+
+void scrypt_buffer_free(void *scratchpad)
+{
+    free(scratchpad);
+}
+
+void scrypt_hash_mine(const void* input, size_t inputlen, uint32_t *res, void *scratchpad)
+{
+    return scrypt(input, inputlen, res, scratchpad);
 }
